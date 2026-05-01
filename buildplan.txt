@@ -1,0 +1,306 @@
+Here's the full build plan. Each phase is independently testable — you can use the app at the end of every phase.
+
+---
+
+## Phase 1: Scaffold + Database + Auth
+**Goal:** App boots, user can log in, protected routes work.
+
+**Tasks:**
+
+**1.1 — Project init**
+- `npx create-next-app@latest data-crm --typescript --tailwind --app --src-dir`
+- Install deps: `mongoose`, `bcryptjs`, `jose` (for JWT — edge-compatible, works in middleware unlike `jsonwebtoken`), `zod`
+- Init shadcn: `npx shadcn@latest init` → add button, input, card, toast, sonner
+
+**1.2 — MongoDB connection**
+- `src/lib/db.ts` — singleton pattern with `global._mongoPromise`
+- `.env.local` — `MONGODB_URI`, `JWT_SECRET`
+- Test connection with a health check API route
+
+**1.3 — User model + seed script**
+- `src/lib/models/user.ts` — username, passwordHash, createdAt
+- `scripts/seed-user.ts` — run with `npx tsx scripts/seed-user.ts` → creates admin user with bcrypt-hashed password
+- No registration UI — users are created via script only
+
+**1.4 — Auth API routes**
+- `POST /api/auth/login` — validate credentials, sign JWT with `jose`, set httpOnly cookie (7d expiry)
+- `POST /api/auth/logout` — clear cookie
+- `GET /api/auth/me` — verify token, return user
+
+**1.5 — Auth middleware**
+- `src/middleware.ts` — intercept all routes except `/login` and `/api/auth/*`, verify JWT, redirect to `/login` if invalid
+
+**1.6 — Login page**
+- `src/app/login/page.tsx` — username + password form, error toast on failure, redirect to `/dashboard` on success
+- Minimal styling — centered card, shadcn inputs
+
+**1.7 — Root layout + shell**
+- `src/app/layout.tsx` — Inter font, theme provider, toast provider
+- `src/components/layout/sidebar.tsx` — sidebar nav with: Dashboard, Pages. Collapsible on mobile.
+- `src/components/layout/header.tsx` — page title, user dropdown (logout)
+- `src/app/dashboard/page.tsx` — placeholder "Dashboard coming soon"
+- `src/app/pages/page.tsx` — placeholder "Pages coming soon"
+
+**Testable at end:** Can log in, see sidebar, navigate between placeholder pages, logout works, unauthenticated access redirects to login.
+
+---
+
+## Phase 2: Pages CRUD
+**Goal:** User can create, rename, star, delete pages.
+
+**Tasks:**
+
+**2.1 — Page model**
+- `src/lib/models/page.ts` — userId, name, starred, schema (default empty array), titleField, dedupField, statusOptions (default array), timestamps
+- Index on `{ userId: 1, starred: -1, updatedAt: -1 }`
+
+**2.2 — Pages API**
+- `GET /api/pages` — fetch all pages for current user, include record count via aggregation lookup on records collection
+- `POST /api/pages` — create with name, defaults for everything else
+- `PATCH /api/pages/[pageId]` — update name, starred, statusOptions
+- `DELETE /api/pages/[pageId]` — delete page + cascade delete all its records
+
+**2.3 — Pages list UI**
+- `src/app/pages/page.tsx` — grid of page cards
+- Each card: name, record count badge, star toggle (optimistic update), last updated relative time, click → navigate to `/pages/[pageId]`
+- Three-dot menu on each card: rename (inline edit), delete (confirmation dialog)
+- "Create Page" button → dialog with name input
+- Empty state: illustration + "Create your first page"
+- Starred pages sorted to top
+
+**2.4 — Page view placeholder**
+- `src/app/pages/[pageId]/page.tsx` — fetch page by ID, show name as editable h1, star toggle, "Import JSON" button (disabled for now), empty table placeholder
+
+**Testable at end:** Can create pages, rename them, star/unstar, delete. Pages persist across sessions. Page view loads with the correct name.
+
+---
+
+## Phase 3: Schema Detection + JSON Import
+**Goal:** Drag-drop a JSON file, auto-detect schema, preview, dedup, import.
+
+This is the hardest phase — the core differentiator.
+
+**Tasks:**
+
+**3.1 — Schema detector**
+- `src/lib/schema-detector.ts`
+- Input: array of objects
+- Output: `SchemaField[]` — `{ key, label, type, visible, pinned }`
+- Type detection priority: phone regex → url regex → email regex → boolean → number → array → nested object (flatten one level, `parent.child`) → string
+- Label generator: `totalScore` → `"Total Score"`, `category_name` → `"Category Name"`, `placeId` → `"Place ID"`
+- Title field auto-detect: first field matching `title|name|company|business|label` or first string field
+- Dedup field auto-detect: first field matching `phone|email|placeId|id` or null
+- Unit test this independently — it's the foundation
+
+**3.2 — Record model**
+- `src/lib/models/record.ts` — pageId, userId, data (Mixed/Object), status, score, notes, tags, starred, timestamps
+- Indexes: `{ pageId: 1, status: 1 }`, `{ pageId: 1, starred: -1 }`
+- No wildcard index yet — add in Phase 6 optimization
+
+**3.3 — Schema detection API**
+- `POST /api/pages/[pageId]/detect-schema` — receives first 100 records (client sends subset for speed), runs schema detector, returns detected schema + preview data
+- Does NOT write anything — pure detection
+
+**3.4 — Import API**
+- `POST /api/pages/[pageId]/records/import`
+- Input: `{ records: [...], schema: [...], titleField, dedupField, mode: 'new_only' | 'upsert' }`
+- If page has no schema yet: set schema, titleField, dedupField from request
+- If page has schema: merge new keys into existing schema (visible: false)
+- Dedup logic: if dedupField is set, normalize values (strip whitespace/dashes for phone, lowercase for email), check existing records, split into new vs existing
+- Bulk insert new records with `insertMany` (batch 500 at a time)
+- Upsert mode: update `data` field on existing matches
+- Return: `{ inserted: 558, updated: 0, skipped: 45, newColumns: ["website"] }`
+
+**3.5 — Dedup utility**
+- `src/lib/dedup.ts`
+- Phone normalizer: strip spaces, dashes, parens, normalize country code (`+91`, `91`, `091` → `+91`)
+- Email normalizer: lowercase, trim
+- Generic: trim + lowercase
+- Compare function that picks strategy by field type
+
+**3.6 — Import modal UI**
+- `src/components/records/import-modal.tsx`
+- **Step 1 — Drop zone:** Drag-and-drop area (or click to browse). Accept `.json` only. On file load: parse JSON (handle both array and single-object-wrapped-in-array), validate it's an array of objects, show count. If file is >10MB, parse in chunks.
+- **Step 2 — Schema preview:** Call detect-schema API. Show table of detected columns: key, detected type (with override dropdown), label (editable), visible toggle. Show titleField and dedupField dropdowns. Show first 5 rows as a mini preview table.
+- **Step 3 — Dedup check (if page has existing records):** Show "X records in file, Y match existing (by dedupField), Z new". Radio: import new only / import & update existing.
+- **Step 4 — Import:** Progress bar, batch processing, completion toast with summary.
+
+**3.7 — Wire it up**
+- Enable the "Import JSON" button on page view
+- After successful import, refresh the page to show the (still placeholder) table
+- Store raw record count on the page cards
+
+**Testable at end:** Can drop the Apify JSON onto a page, see detected columns with correct types, configure which columns are visible, import 603 records, see the import summary. Dropping same file again shows dedup results.
+
+---
+
+## Phase 4: Dynamic Data Table
+**Goal:** Records display in a type-aware, filterable, sortable table.
+
+**Tasks:**
+
+**4.1 — Records API**
+- `GET /api/pages/[pageId]/records`
+- Query params: `search` (text search across titleField), `page` (pagination, default 1), `limit` (default 50), `sort` (field key), `sortDir` (asc/desc), `filters` (JSON-encoded object)
+- Filter builder: `src/lib/filter-builder.ts` — takes schema + filter values, builds MongoDB query
+  - String fields: `{ "data.city": { $regex: value, $options: "i" } }`
+  - Number fields: `{ "data.totalScore": { $gte: min, $lte: max } }`
+  - Array fields: `{ "data.categories": { $in: [...selected] } }`
+  - Boolean/existence: `{ "data.phone": { $exists: true, $ne: "" } }`
+  - Status (system): `{ status: { $in: [...] } }`
+  - Score (system): `{ score: { $gte: min } }`
+- Return: `{ records: [...], total: 603, page: 1, totalPages: 13 }`
+
+**4.2 — Filters API**
+- `GET /api/pages/[pageId]/filters`
+- For each schema field: return distinct values (for array/string fields with <50 unique values), min/max (for number fields)
+- Used to populate filter dropdowns dynamically
+
+**4.3 — Cell renderers**
+- `src/components/records/field-renderers/` — one component per type
+- `string-field.tsx` — plain text, truncated to 1 line in table, full in detail
+- `phone-field.tsx` — formatted display + `tel:` link + copy button
+- `url-field.tsx` — truncated hostname + external link icon
+- `email-field.tsx` — `mailto:` link + copy
+- `number-field.tsx` — right-aligned, 1 decimal for floats
+- `array-field.tsx` — first 2 items as chips + "+N more"
+- `boolean-field.tsx` — green check / red X
+- `json-field.tsx` — `{...}` label (expand in detail panel only)
+- `status-cell.tsx` — colored badge, click → dropdown to change (calls PATCH inline)
+- `score-cell.tsx` — star icons, click to set (calls PATCH inline)
+- `starred-cell.tsx` — star icon toggle
+
+**4.4 — Dynamic data table**
+- `src/components/records/data-table.tsx`
+- Reads page schema → renders only `visible: true` columns in schema order
+- System columns (starred, status, score) always shown as last columns
+- Uses shadcn `<Table>` — NOT a heavy data-grid lib. Keep it simple.
+- Column headers: click to sort (asc → desc → none), visual sort indicator
+- Rows: click → open detail panel (Phase 5). Don't navigate away.
+- Checkbox on each row for bulk select
+- Pagination bar at bottom: prev/next, page X of Y, rows per page selector
+
+**4.5 — Dynamic filter bar**
+- `src/components/records/filter-bar.tsx`
+- Generated from schema + filter options API
+- For each visible field based on type: search input (string), range slider or min/max inputs (number), multi-select dropdown (array), has/doesn't have toggle (phone/url/email), status multi-select (system), score range (system)
+- Active filter chips with X to remove
+- "Clear all" button
+- Filters debounced → trigger refetch
+
+**4.6 — Search bar**
+- Text search across the titleField value
+- Debounced 300ms → triggers refetch with `search` param
+
+**4.7 — Wire into page view**
+- `src/app/pages/[pageId]/page.tsx` — header (name, star, import button, column settings button) + filter bar + data table + pagination
+- Loading skeleton while data fetches
+- Empty state if no records: "Import some data to get started"
+
+**Testable at end:** Can see all 603 records paginated, filter by city/category/rating/status, sort by any column, search by name, inline-edit status and score. Table renders phone numbers as clickable links, websites as external links.
+
+---
+
+## Phase 5: Detail Panel + Notes + Bulk Actions
+**Goal:** Full record detail, notes timeline, tags, bulk operations.
+
+**Tasks:**
+
+**5.1 — Record CRUD APIs**
+- `PATCH /api/pages/[pageId]/records/[recordId]` — update status, score, starred, tags, notes (append), data (field-level update)
+- `DELETE /api/pages/[pageId]/records/[recordId]`
+- `POST /api/pages/[pageId]/records/bulk` — `{ ids: [...], action: 'set_status' | 'set_tags' | 'delete' | 'set_score', value }`
+
+**5.2 — Detail slide-over panel**
+- `src/components/records/detail-panel.tsx`
+- Slide-over from right (shadcn `Sheet`)
+- **Header:** Title field value as heading, star toggle, status dropdown, score stars
+- **Data section:** All fields from schema rendered by type, each on its own row with label. Phone → big clickable call button. Website → open button. Google Maps URL → "View on Maps" button.
+- **Tags section:** Existing tags as chips with X, input to add new tag (Enter to add, comma-separated)
+- **Notes section:** Chronological timeline (newest first). Each note: text + relative timestamp. Add note: textarea + submit button. Notes are append-only (no edit/delete — keeps it simple).
+- **Footer:** "Delete record" danger button with confirmation
+- Keyboard: Escape to close, arrow up/down to navigate between records while panel is open
+
+**5.3 — Bulk actions toolbar**
+- Appears when 1+ checkboxes selected in table
+- Shows: "X selected" count
+- Actions: Set Status → dropdown, Add Tag → input, Set Score → stars, Delete → confirmation
+- "Select all on this page" / "Select all X matching filters" options
+- Calls bulk API
+
+**5.4 — Column settings drawer**
+- `src/components/records/column-settings.tsx`
+- Triggered by gear icon in page header
+- List of all schema fields: drag handle to reorder, eye icon to show/hide, editable label, type override dropdown
+- Save → PATCH page schema
+- Changes reflect immediately in table
+
+**Testable at end:** Can click any record → slide-over shows full details, can add notes, tags, change status/score. Can bulk-select records and change status in one click. Can reorder and hide columns.
+
+---
+
+## Phase 6: Dashboard + Polish
+**Goal:** Overview stats, performance optimization, edge cases.
+
+**Tasks:**
+
+**6.1 — Dashboard API**
+- `GET /api/dashboard`
+- Aggregation pipeline:
+  - Total records across all user's pages
+  - Records by status (across all pages)
+  - Per-page breakdown: name, starred, record count, status distribution, last updated
+  - Records added this week vs last week (trend)
+
+**6.2 — Dashboard UI**
+- `src/app/dashboard/page.tsx`
+- **Stat cards row:** Total Records, Total Pages, % Contacted, % Converted
+- **Status breakdown:** Horizontal stacked bar chart (use a simple div-based bar — no charting lib needed for this)
+- **Pages table:** Name (link), records, status mini-bar, last updated, star toggle. Starred pinned to top. Sorted by last updated.
+- **Recent activity:** Last 10 records added/status-changed across all pages (optional, add if time permits)
+
+**6.3 — Performance pass**
+- Add compound indexes based on actual query patterns
+- Debounce all filter/search inputs (300ms)
+- Pagination: ensure `skip/limit` uses indexed queries
+- Import: batch inserts of 500, stream progress to UI
+- Large pages (>1000 records): virtualize table rows? Probably not needed at this scale — defer.
+
+**6.4 — Edge cases**
+- Empty JSON array → show error
+- JSON with single object (not array) → wrap in array
+- Deeply nested objects → flatten one level, skip deeper
+- Records with wildly inconsistent keys → schema detects all keys, missing values render as `—`
+- Invalid/corrupt JSON → parse error with helpful message
+- Duplicate page names → allow (different IDs)
+- Very long field values → truncate in table with tooltip
+- Mobile: sidebar collapses, table scrolls horizontally, detail panel goes full-screen
+
+**6.5 — Export**
+- "Export CSV" button on page view
+- Uses current filters — exports only what's visible
+- Generates client-side, downloads immediately
+- Columns: visible schema fields + system fields (status, score, tags)
+
+**6.6 — Status customization**
+- On page settings (or column settings drawer): section to customize status options
+- Add/remove/rename statuses
+- Default: `["new", "contacted", "interested", "not_interested", "converted", "junk"]`
+- Changing statuses doesn't break existing records — orphaned statuses show as gray badges
+
+**Testable at end:** Dashboard shows real stats, CSV export works, mobile layout is usable, edge cases handled gracefully.
+
+---
+
+## Phase Summary
+
+| Phase | What | Key Deliverable | Effort |
+|---|---|---|---|
+| 1 | Scaffold + Auth | Login works, routes protected | Half session |
+| 2 | Pages CRUD | Create/manage workspaces | Half session |
+| 3 | Schema Detection + Import | Drop JSON → auto-detect → import | Full session (hardest) |
+| 4 | Dynamic Table | Filterable, sortable, type-aware table | Full session |
+| 5 | Detail Panel + Bulk | Notes, tags, bulk ops | Half session |
+| 6 | Dashboard + Polish | Stats, export, edge cases | Half session |
+
+Total: ~4 focused sessions. Could compress to 3 if we move fast.

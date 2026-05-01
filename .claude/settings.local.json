@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bunx --bun shadcn@latest add input card label sonner dropdown-menu avatar)",
+      "Bash(bun run *)",
+      "Bash(bunx --bun shadcn@latest add sidebar dialog alert-dialog tooltip separator skeleton sheet)",
+      "Bash(bun add *)",
+      "Bash(bunx --bun shadcn@latest add select badge progress checkbox)",
+      "Bash(bunx --bun shadcn@latest add table popover)",
+      "Bash(bunx --bun shadcn@latest add textarea)"
+    ]
+  }
+}
