@@ -3,6 +3,8 @@
   "version": "0.0.1",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "author": "Dhruv Rekhawat",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
