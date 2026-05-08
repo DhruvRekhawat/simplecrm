@@ -1,4 +1,6 @@
-# SimpleCRM
+<p align="center">
+  <img src="./public/simple-crm-logo.svg" alt="SimpleCRM" height="48" />
+</p>
 
 A schema-agnostic data workspace that turns any JSON dataset into a filterable, searchable table with built-in CRM capabilities — status tracking, scoring, notes, tags, and bulk actions. Drop a Google Maps scrape today, a competitor list tomorrow, a product inventory next week — each lives in its own page with its own auto-detected schema.
 

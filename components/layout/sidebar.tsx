@@ -42,10 +42,22 @@ export function AppSidebar() {
   return (
     <UISidebar collapsible="icon">
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-1 font-semibold tracking-tight">
-          <span className="text-lg">📇</span>
-          <span className="group-data-[collapsible=icon]:hidden">SimpleCRM</span>
-        </div>
+        <Link
+          href="/dashboard"
+          className="flex items-center px-2 py-1"
+          aria-label="SimpleCRM"
+        >
+          <img
+            src="/simple-crm-icon.svg"
+            alt=""
+            className="hidden size-6 shrink-0 group-data-[collapsible=icon]:block"
+          />
+          <img
+            src="/simple-crm-logo.svg"
+            alt="SimpleCRM"
+            className="h-7 w-auto group-data-[collapsible=icon]:hidden"
+          />
+        </Link>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>

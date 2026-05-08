@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card"
 
 export default function LoginPage() {
   return (
@@ -50,8 +50,12 @@ function LoginForm() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 bg-background">
       <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>SimpleCRM</CardTitle>
+        <CardHeader className="items-center text-center">
+          <img
+            src="/simple-crm-logo.svg"
+            alt="SimpleCRM"
+            className="h-9 w-auto mb-2"
+          />
           <CardDescription>Sign in to continue</CardDescription>
         </CardHeader>
         <CardContent>
